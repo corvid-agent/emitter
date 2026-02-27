@@ -1,0 +1,38 @@
+{
+  "name": "@corvid-agent/emitter",
+  "version": "1.0.0",
+  "description": "Type-safe event emitter with wildcards, async support, and backpressure. Zero deps. TypeScript-first.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test",
+    "prepublishOnly": "bun run build"
+  },
+  "keywords": [
+    "event-emitter",
+    "events",
+    "pubsub",
+    "typescript",
+    "type-safe",
+    "wildcard",
+    "async",
+    "zero-dependency"
+  ],
+  "author": "corvid-agent",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/corvid-agent/emitter.git"
+  },
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.3.0"
+  }
+}
