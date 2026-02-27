@@ -116,6 +116,29 @@ const payload = await emitter.wait("user:login");
 console.log(payload.id);
 ```
 
+### Pipe (Event Forwarding)
+
+Compose emitters by piping events from one to another.
+
+```ts
+const source = new Emitter<Events>();
+const sink = new Emitter<Events>();
+
+// Forward all events
+const sub = source.pipe(sink);
+
+// Forward specific events only
+source.pipe(sink, ["user:login", "user:logout"]);
+
+// Forward by wildcard pattern
+source.pipe(sink, "user:*");
+
+// Disconnect the pipe
+sub.off();
+```
+
+Pipes can be chained: `a.pipe(b)` then `b.pipe(c)` forwards events from `a` through `b` to `c`.
+
 ## API Reference
 
 ### `new Emitter<T>()`
@@ -166,6 +189,15 @@ Number of listeners for a specific event (excludes wildcards).
 ### `.eventNames(): string[]`
 
 Array of event names with registered listeners (excludes wildcards).
+
+### `.pipe(target, filter?): Subscription`
+
+Forward events to another emitter. `filter` can be:
+- omitted — forward all events
+- `string[]` — forward only the listed event names
+- `string` — forward events matching a wildcard pattern
+
+Returns a `Subscription` whose `off()` disconnects the pipe.
 
 ### `.clear(event?): this`
 
