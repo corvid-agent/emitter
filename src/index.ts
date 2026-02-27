@@ -142,6 +142,9 @@ export class Emitter<T extends EventMap = EventMap> {
   /** @internal */
   private maxBufferSize = 1000;
 
+  /** @internal */
+  private pipeHandlers: ((event: string, payload: unknown) => void)[] = [];
+
   // -- Configuration ----------------------------------------------------
 
   /**
@@ -447,14 +450,76 @@ export class Emitter<T extends EventMap = EventMap> {
   dispose(): void {
     this.listeners.clear();
     this.wildcardListeners = [];
+    this.pipeHandlers = [];
     this.buffer = [];
     this.paused = false;
+  }
+
+  // -- Pipe -------------------------------------------------------------
+
+  /**
+   * Forward events from this emitter to another emitter.
+   *
+   * - `pipe(target)` — forward **all** events.
+   * - `pipe(target, ["a", "b"])` — forward only the listed events.
+   * - `pipe(target, "user:*")` — forward events matching a wildcard pattern.
+   *
+   * Returns a `Subscription` whose `off()` disconnects the pipe.
+   *
+   * @example
+   * ```ts
+   * const source = new Emitter<Events>();
+   * const sink = new Emitter<Events>();
+   *
+   * // Forward everything
+   * const sub = source.pipe(sink);
+   *
+   * // Forward specific events
+   * source.pipe(sink, ["user:login", "user:logout"]);
+   *
+   * // Forward by wildcard
+   * source.pipe(sink, "user:*");
+   *
+   * // Disconnect
+   * sub.off();
+   * ```
+   */
+  pipe(target: Emitter<T>): Subscription;
+  pipe<K extends string & keyof T>(target: Emitter<T>, events: K[]): Subscription;
+  pipe(target: Emitter<any>, pattern: string): Subscription;
+  pipe(target: Emitter<any>, filter?: string | string[]): Subscription {
+    const handler = (event: string, payload: unknown) => {
+      if (!filter) {
+        target.emit(event, payload);
+      } else if (Array.isArray(filter)) {
+        if (filter.includes(event)) {
+          target.emit(event, payload);
+        }
+      } else {
+        if (matchWildcard(filter, event)) {
+          target.emit(event, payload);
+        }
+      }
+    };
+
+    this.pipeHandlers.push(handler);
+
+    return {
+      off: () => {
+        const idx = this.pipeHandlers.indexOf(handler);
+        if (idx !== -1) this.pipeHandlers.splice(idx, 1);
+      },
+    };
   }
 
   // -- Internal ---------------------------------------------------------
 
   /** @internal */
   private dispatch(event: string, payload: unknown): boolean {
+    for (const handler of this.pipeHandlers) {
+      handler(event, payload);
+    }
+
     const listeners = this.collectListeners(event);
     if (listeners.length === 0) return false;
 
@@ -468,6 +533,10 @@ export class Emitter<T extends EventMap = EventMap> {
 
   /** @internal */
   private async dispatchAsync(event: string, payload: unknown): Promise<boolean> {
+    for (const handler of this.pipeHandlers) {
+      handler(event, payload);
+    }
+
     const listeners = this.collectListeners(event);
     if (listeners.length === 0) return false;
 

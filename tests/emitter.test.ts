@@ -378,4 +378,186 @@ describe("Emitter", () => {
       expect(emitter.setMaxListeners(50)).toBe(emitter);
     });
   });
+
+  // -- pipe -------------------------------------------------------------
+
+  describe("pipe", () => {
+    test("pipe(target) forwards all events", () => {
+      type Events = { a: string; b: number };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fn = mock(() => {});
+
+      sink.on("a", fn);
+      source.pipe(sink);
+
+      source.emit("a", "hello");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("hello");
+    });
+
+    test("pipe(target) forwards multiple event types", () => {
+      type Events = { a: string; b: number };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fnA = mock(() => {});
+      const fnB = mock(() => {});
+
+      sink.on("a", fnA);
+      sink.on("b", fnB);
+      source.pipe(sink);
+
+      source.emit("a", "hello");
+      source.emit("b", 42);
+
+      expect(fnA).toHaveBeenCalledTimes(1);
+      expect(fnA).toHaveBeenCalledWith("hello");
+      expect(fnB).toHaveBeenCalledTimes(1);
+      expect(fnB).toHaveBeenCalledWith(42);
+    });
+
+    test("pipe(target, events) forwards only listed events", () => {
+      type Events = { a: string; b: number; c: boolean };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fnA = mock(() => {});
+      const fnB = mock(() => {});
+      const fnC = mock(() => {});
+
+      sink.on("a", fnA);
+      sink.on("b", fnB);
+      sink.on("c", fnC);
+      source.pipe(sink, ["a", "b"]);
+
+      source.emit("a", "hello");
+      source.emit("b", 42);
+      source.emit("c", true);
+
+      expect(fnA).toHaveBeenCalledTimes(1);
+      expect(fnB).toHaveBeenCalledTimes(1);
+      expect(fnC).toHaveBeenCalledTimes(0);
+    });
+
+    test("pipe(target, pattern) forwards by wildcard", () => {
+      const source = new Emitter();
+      const sink = new Emitter();
+      const fn = mock(() => {});
+
+      sink.on("user:login", fn);
+      sink.on("system:start", () => {});
+      source.pipe(sink, "user:*");
+
+      source.emit("user:login", { id: "1" });
+      source.emit("system:start", {});
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith({ id: "1" });
+    });
+
+    test("pipe(target, pattern) works with double wildcard", () => {
+      const source = new Emitter();
+      const sink = new Emitter();
+      const fn = mock(() => {});
+
+      sink.on("user:profile:update", fn);
+      source.pipe(sink, "user:**");
+
+      source.emit("user:profile:update", { name: "Alice" });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith({ name: "Alice" });
+    });
+
+    test("pipe returns a Subscription that disconnects", () => {
+      type Events = { a: string };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fn = mock(() => {});
+
+      sink.on("a", fn);
+      const sub = source.pipe(sink);
+
+      source.emit("a", "before");
+      sub.off();
+      source.emit("a", "after");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("before");
+    });
+
+    test("off() is idempotent", () => {
+      const source = new Emitter();
+      const sink = new Emitter();
+      const sub = source.pipe(sink);
+
+      sub.off();
+      sub.off(); // should not throw
+    });
+
+    test("dispose() disconnects pipes", () => {
+      type Events = { a: string };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fn = mock(() => {});
+
+      sink.on("a", fn);
+      source.pipe(sink);
+      source.dispose();
+
+      source.emit("a", "after-dispose");
+      expect(fn).toHaveBeenCalledTimes(0);
+    });
+
+    test("pipe works with emitAsync", async () => {
+      type Events = { a: string };
+      const source = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fn = mock(() => {});
+
+      sink.on("a", fn);
+      source.pipe(sink);
+
+      await source.emitAsync("a", "async-hello");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("async-hello");
+    });
+
+    test("multiple pipes can coexist", () => {
+      type Events = { a: string };
+      const source = new Emitter<Events>();
+      const sink1 = new Emitter<Events>();
+      const sink2 = new Emitter<Events>();
+      const fn1 = mock(() => {});
+      const fn2 = mock(() => {});
+
+      sink1.on("a", fn1);
+      sink2.on("a", fn2);
+      source.pipe(sink1);
+      source.pipe(sink2);
+
+      source.emit("a", "hello");
+
+      expect(fn1).toHaveBeenCalledTimes(1);
+      expect(fn2).toHaveBeenCalledTimes(1);
+    });
+
+    test("pipe chains: source -> middle -> sink", () => {
+      type Events = { a: string };
+      const source = new Emitter<Events>();
+      const middle = new Emitter<Events>();
+      const sink = new Emitter<Events>();
+      const fn = mock(() => {});
+
+      sink.on("a", fn);
+      source.pipe(middle);
+      middle.pipe(sink);
+
+      source.emit("a", "chained");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("chained");
+    });
+  });
 });
