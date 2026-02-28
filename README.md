@@ -94,6 +94,27 @@ emitter.on("data:save", async (record) => {
 await emitter.emitAsync("data:save", record);
 ```
 
+### Error Handling
+
+By default, if a listener throws, the error propagates and stops subsequent listeners from firing. Pass an `onError` handler to catch errors per-listener, allowing remaining listeners to still execute.
+
+```ts
+const emitter = new Emitter<Events>({
+  onError: (err, event) => console.error(`Error in ${event}:`, err),
+});
+
+emitter.on("save", () => {
+  throw new Error("db failure");
+});
+emitter.on("save", () => {
+  console.log("still runs");
+});
+
+emitter.emit("save", record); // both listeners are called
+```
+
+This works for both `emit()` and `emitAsync()`.
+
 ### Pause & Resume
 
 Buffer events while paused, replay them on resume.
@@ -118,9 +139,13 @@ console.log(payload.id);
 
 ## API Reference
 
-### `new Emitter<T>()`
+### `new Emitter<T>(options?)`
 
 Create a new emitter. `T` is an `EventMap` — a record of event names to payload types.
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `onError` | `(error: unknown, event: string) => void` | `undefined` | Called when a listener throws. When set, errors are caught per-listener so remaining listeners still execute. |
 
 ### `.on(event, listener, options?): Subscription`
 

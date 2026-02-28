@@ -45,6 +45,18 @@ interface StoredListener<T = unknown> {
   priority: number;
 }
 
+/**
+ * Options for constructing an `Emitter`.
+ */
+export interface EmitterOptions {
+  /**
+   * Called when a listener throws during `emit()` or `emitAsync()`.
+   * When set, errors are caught per-listener so remaining listeners
+   * still execute. When unset, errors propagate normally.
+   */
+  onError?: (error: unknown, event: string) => void;
+}
+
 // -- Wildcard Matching ----------------------------------------------------
 
 /**
@@ -122,6 +134,14 @@ export function matchWildcard(pattern: string, event: string): boolean {
  *
  * emitter.emit("user:login", { id: "42" });
  * ```
+ *
+ * @example
+ * ```ts
+ * // With error handling:
+ * const emitter = new Emitter<Events>({
+ *   onError: (err, event) => console.error(`Error in ${event}:`, err),
+ * });
+ * ```
  */
 export class Emitter<T extends EventMap = EventMap> {
   /** @internal */
@@ -141,6 +161,13 @@ export class Emitter<T extends EventMap = EventMap> {
 
   /** @internal */
   private maxBufferSize = 1000;
+
+  /** @internal */
+  private onError?: (error: unknown, event: string) => void;
+
+  constructor(options?: EmitterOptions) {
+    this.onError = options?.onError;
+  }
 
   // -- Configuration ----------------------------------------------------
 
@@ -459,7 +486,15 @@ export class Emitter<T extends EventMap = EventMap> {
     if (listeners.length === 0) return false;
 
     for (const stored of listeners) {
-      stored.fn(payload);
+      if (this.onError) {
+        try {
+          stored.fn(payload);
+        } catch (err) {
+          this.onError(err, event);
+        }
+      } else {
+        stored.fn(payload);
+      }
     }
 
     this.pruneOnce(event, listeners);
@@ -472,7 +507,15 @@ export class Emitter<T extends EventMap = EventMap> {
     if (listeners.length === 0) return false;
 
     for (const stored of listeners) {
-      await stored.fn(payload);
+      if (this.onError) {
+        try {
+          await stored.fn(payload);
+        } catch (err) {
+          this.onError(err, event);
+        }
+      } else {
+        await stored.fn(payload);
+      }
     }
 
     this.pruneOnce(event, listeners);

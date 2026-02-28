@@ -378,4 +378,122 @@ describe("Emitter", () => {
       expect(emitter.setMaxListeners(50)).toBe(emitter);
     });
   });
+
+  // -- onError ----------------------------------------------------------
+
+  describe("onError", () => {
+    test("catches listener error and calls onError handler", () => {
+      const errors: { err: unknown; event: string }[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err, event) => errors.push({ err, event }),
+      });
+
+      const boom = new Error("boom");
+      emitter.on("ping", () => {
+        throw boom;
+      });
+      emitter.emit("ping", "hello");
+
+      expect(errors).toEqual([{ err: boom, event: "ping" }]);
+    });
+
+    test("remaining listeners still fire after a listener throws", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      const order: number[] = [];
+      emitter.on("ping", () => order.push(1));
+      emitter.on("ping", () => {
+        throw new Error("fail");
+      });
+      emitter.on("ping", () => order.push(3));
+
+      emitter.emit("ping", "hello");
+
+      expect(order).toEqual([1, 3]);
+      expect(errors.length).toBe(1);
+    });
+
+    test("without onError, listener errors propagate normally", () => {
+      const emitter = new Emitter<{ ping: string }>();
+
+      emitter.on("ping", () => {
+        throw new Error("boom");
+      });
+
+      expect(() => emitter.emit("ping", "hello")).toThrow("boom");
+    });
+
+    test("onError works with emitAsync", async () => {
+      const errors: { err: unknown; event: string }[] = [];
+      const emitter = new Emitter<{ task: string }>({
+        onError: (err, event) => errors.push({ err, event }),
+      });
+
+      const order: number[] = [];
+      emitter.on("task", async () => order.push(1));
+      emitter.on("task", async () => {
+        throw new Error("async fail");
+      });
+      emitter.on("task", async () => order.push(3));
+
+      await emitter.emitAsync("task", "go");
+
+      expect(order).toEqual([1, 3]);
+      expect(errors.length).toBe(1);
+      expect((errors[0].err as Error).message).toBe("async fail");
+      expect(errors[0].event).toBe("task");
+    });
+
+    test("without onError, emitAsync errors propagate normally", async () => {
+      const emitter = new Emitter<{ task: string }>();
+
+      emitter.on("task", async () => {
+        throw new Error("async boom");
+      });
+
+      await expect(emitter.emitAsync("task", "go")).rejects.toThrow("async boom");
+    });
+
+    test("onError isolates errors between multiple listeners", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      emitter.on("ping", () => {
+        throw new Error("first");
+      });
+      emitter.on("ping", () => {
+        throw new Error("second");
+      });
+
+      emitter.emit("ping", "hello");
+
+      expect(errors.length).toBe(2);
+      expect((errors[0] as Error).message).toBe("first");
+      expect((errors[1] as Error).message).toBe("second");
+    });
+
+    test("once listeners still get pruned when onError is set", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      const fn = mock(() => {
+        throw new Error("once-error");
+      });
+      emitter.once("ping", fn);
+
+      emitter.emit("ping", "a");
+      emitter.emit("ping", "b");
+
+      // once listener should fire only once even though it threw
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(errors.length).toBe(1);
+    });
+  });
 });
