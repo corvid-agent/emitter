@@ -115,6 +115,39 @@ emitter.emit("save", record); // both listeners are called
 
 This works for both `emit()` and `emitAsync()`.
 
+### Middleware
+
+Intercept events before they reach listeners. Middleware can log, transform payloads, or swallow events entirely.
+
+```ts
+// Logging — passes events through unchanged
+emitter.use((event, payload, next) => {
+  console.log(`[${new Date().toISOString()}] ${event}`);
+  return next(payload);
+});
+
+// Filtering — swallow events by not calling next()
+emitter.use((event, payload, next) => {
+  if (event === "spam") return; // swallowed
+  return next(payload);
+});
+
+// Transform — modify the payload before listeners see it
+emitter.use((event, payload, next) => {
+  return next({ ...payload, timestamp: Date.now() });
+});
+```
+
+Middleware runs in registration order. Each calls `next(payload)` to continue the chain, or `next()` to pass the original payload through. Omit the `next()` call to swallow the event.
+
+```ts
+// Remove middleware later
+const sub = emitter.use(myMiddleware);
+sub.off();
+```
+
+Works with both `emit()` and `emitAsync()`. Async middleware is awaited when using `emitAsync()`.
+
 ### Pause & Resume
 
 Buffer events while paused, replay them on resume.
@@ -182,6 +215,18 @@ Subscribe to an event. Returns a `Subscription` with an `off()` method.
 ### `.once(event, listener, options?): Subscription`
 
 Shorthand for `.on(event, listener, { once: true })`.
+
+### `.use(middleware): Subscription`
+
+Register a middleware that intercepts events before listeners. Returns a `Subscription` whose `off()` removes it.
+
+```ts
+type Middleware = (
+  event: string,
+  payload: unknown,
+  next: (payload?: unknown) => void | Promise<void>,
+) => void | Promise<void>;
+```
 
 ### `.emit(event, payload): boolean`
 
