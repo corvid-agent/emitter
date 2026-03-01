@@ -1,5 +1,5 @@
 import { describe, test, expect, mock } from "bun:test";
-import { Emitter, matchWildcard } from "../src/index";
+import { Emitter, matchWildcard, type Middleware } from "../src/index";
 
 // -- matchWildcard --------------------------------------------------------
 
@@ -676,6 +676,303 @@ describe("Emitter", () => {
       // once listener should fire only once even though it threw
       expect(fn).toHaveBeenCalledTimes(1);
       expect(errors.length).toBe(1);
+    });
+  });
+
+  // -- Middleware --------------------------------------------------------
+
+  describe("middleware", () => {
+    test("use() returns a subscription that removes the middleware", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const calls: string[] = [];
+
+      const sub = emitter.use((event, payload, next) => {
+        calls.push("mw");
+        return next(payload);
+      });
+      emitter.on("ping", (v) => calls.push(v));
+
+      emitter.emit("ping", "a");
+      expect(calls).toEqual(["mw", "a"]);
+
+      sub.off();
+      calls.length = 0;
+
+      emitter.emit("ping", "b");
+      expect(calls).toEqual(["b"]);
+    });
+
+    test("middleware runs before listeners", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const order: string[] = [];
+
+      emitter.use((event, payload, next) => {
+        order.push("middleware");
+        return next(payload);
+      });
+      emitter.on("ping", () => order.push("listener"));
+
+      emitter.emit("ping", "hello");
+
+      expect(order).toEqual(["middleware", "listener"]);
+    });
+
+    test("middleware can transform the payload", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, _payload, next) => {
+        return next("transformed");
+      });
+      emitter.on("ping", fn);
+
+      emitter.emit("ping", "original");
+
+      expect(fn).toHaveBeenCalledWith("transformed");
+    });
+
+    test("middleware can swallow events by not calling next()", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, _payload, _next) => {
+        // intentionally not calling next
+      });
+      emitter.on("ping", fn);
+
+      const result = emitter.emit("ping", "hello");
+
+      expect(fn).toHaveBeenCalledTimes(0);
+      expect(result).toBe(false);
+    });
+
+    test("middleware can selectively swallow events", () => {
+      const emitter = new Emitter();
+      const fn = mock(() => {});
+
+      emitter.use((event, payload, next) => {
+        if (event === "spam") return; // swallow
+        return next(payload);
+      });
+      emitter.on("ping", fn);
+      emitter.on("spam", fn);
+
+      emitter.emit("ping", "ok");
+      emitter.emit("spam", "blocked");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("ok");
+    });
+
+    test("multiple middleware run in registration order", () => {
+      const emitter = new Emitter<{ ping: number }>();
+      const order: number[] = [];
+
+      emitter.use((_event, payload, next) => {
+        order.push(1);
+        return next(payload);
+      });
+      emitter.use((_event, payload, next) => {
+        order.push(2);
+        return next(payload);
+      });
+      emitter.use((_event, payload, next) => {
+        order.push(3);
+        return next(payload);
+      });
+      emitter.on("ping", () => order.push(4));
+
+      emitter.emit("ping", 0);
+
+      expect(order).toEqual([1, 2, 3, 4]);
+    });
+
+    test("middleware chain passes transformed payload through", () => {
+      const emitter = new Emitter<{ count: number }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, payload, next) => {
+        return next((payload as number) + 1);
+      });
+      emitter.use((_event, payload, next) => {
+        return next((payload as number) * 10);
+      });
+      emitter.on("count", fn);
+
+      emitter.emit("count", 1); // 1 -> +1 = 2 -> *10 = 20
+
+      expect(fn).toHaveBeenCalledWith(20);
+    });
+
+    test("later middleware can swallow after earlier ones passed through", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, payload, next) => next(payload));
+      emitter.use((_event, _payload, _next) => {
+        // swallow
+      });
+      emitter.on("ping", fn);
+
+      emitter.emit("ping", "hello");
+
+      expect(fn).toHaveBeenCalledTimes(0);
+    });
+
+    test("middleware works with emitAsync", async () => {
+      const emitter = new Emitter<{ task: string }>();
+      const order: string[] = [];
+
+      emitter.use(async (event, payload, next) => {
+        order.push("mw-start");
+        await new Promise((r) => setTimeout(r, 5));
+        order.push("mw-end");
+        return next(payload);
+      });
+      emitter.on("task", () => order.push("listener"));
+
+      await emitter.emitAsync("task", "go");
+
+      expect(order).toEqual(["mw-start", "mw-end", "listener"]);
+    });
+
+    test("async middleware can transform payload", async () => {
+      const emitter = new Emitter<{ task: string }>();
+      const fn = mock(() => {});
+
+      emitter.use(async (_event, _payload, next) => {
+        await new Promise((r) => setTimeout(r, 1));
+        return next("async-transformed");
+      });
+      emitter.on("task", fn);
+
+      await emitter.emitAsync("task", "original");
+
+      expect(fn).toHaveBeenCalledWith("async-transformed");
+    });
+
+    test("async middleware can swallow events", async () => {
+      const emitter = new Emitter<{ task: string }>();
+      const fn = mock(() => {});
+
+      emitter.use(async (_event, _payload, _next) => {
+        await new Promise((r) => setTimeout(r, 1));
+        // swallow
+      });
+      emitter.on("task", fn);
+
+      const result = await emitter.emitAsync("task", "go");
+
+      expect(fn).toHaveBeenCalledTimes(0);
+      expect(result).toBe(false);
+    });
+
+    test("dispose() clears middleware", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+      const mwFn = mock((_e: string, _p: unknown, next: Function) => next());
+
+      emitter.use(mwFn as unknown as Middleware);
+      emitter.on("ping", fn);
+      emitter.dispose();
+
+      emitter.on("ping", fn);
+      emitter.emit("ping", "after-dispose");
+
+      expect(mwFn).toHaveBeenCalledTimes(0);
+      expect(fn).toHaveBeenCalledTimes(1);
+    });
+
+    test("middleware works with wildcard listeners", () => {
+      const emitter = new Emitter();
+      const fn = mock(() => {});
+
+      emitter.use((_event, _payload, next) => next("intercepted"));
+      emitter.on("user:*", fn);
+
+      emitter.emit("user:login", "original");
+
+      expect(fn).toHaveBeenCalledWith("intercepted");
+    });
+
+    test("middleware works with pause/resume", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, payload, next) => next(`${payload}!`));
+      emitter.on("ping", fn);
+
+      emitter.pause();
+      emitter.emit("ping", "buffered");
+      emitter.resume();
+
+      expect(fn).toHaveBeenCalledWith("buffered!");
+    });
+
+    test("middleware works with once listeners", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, payload, next) => next(payload));
+      emitter.once("ping", fn);
+
+      emitter.emit("ping", "a");
+      emitter.emit("ping", "b");
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(fn).toHaveBeenCalledWith("a");
+    });
+
+    test("middleware works with onError", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      emitter.use((_event, payload, next) => next(payload));
+      emitter.on("ping", () => { throw new Error("boom"); });
+      emitter.on("ping", () => {}); // should still fire
+
+      emitter.emit("ping", "hello");
+
+      expect(errors.length).toBe(1);
+    });
+
+    test("middleware off() is idempotent", () => {
+      const emitter = new Emitter();
+      const sub = emitter.use((_e, _p, next) => next());
+      sub.off();
+      sub.off(); // should not throw
+    });
+
+    test("next() with no argument passes original payload", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      const fn = mock(() => {});
+
+      emitter.use((_event, _payload, next) => next());
+      emitter.on("ping", fn);
+
+      emitter.emit("ping", "original");
+
+      expect(fn).toHaveBeenCalledWith("original");
+    });
+
+    test("emit returns false when middleware swallows and no listeners", () => {
+      const emitter = new Emitter<{ ping: string }>();
+
+      emitter.use((_event, _payload, _next) => {
+        // swallow
+      });
+
+      expect(emitter.emit("ping", "hello")).toBe(false);
+    });
+
+    test("emit returns true when middleware passes through to listeners", () => {
+      const emitter = new Emitter<{ ping: string }>();
+      emitter.use((_event, payload, next) => next(payload));
+      emitter.on("ping", () => {});
+
+      expect(emitter.emit("ping", "hello")).toBe(true);
     });
   });
 });

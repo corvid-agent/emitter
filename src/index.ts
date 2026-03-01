@@ -20,6 +20,35 @@ export type EventMap = Record<string, unknown>;
 export type Listener<T = unknown> = (payload: T) => void | Promise<void>;
 
 /**
+ * A middleware function that intercepts events before they reach listeners.
+ *
+ * Middleware receives the event name, payload, and a `next` function.
+ * - Call `next()` to pass the original payload through.
+ * - Call `next(newPayload)` to transform the payload.
+ * - Don't call `next()` to swallow the event entirely.
+ *
+ * @example
+ * ```ts
+ * // Logging middleware
+ * const logger: Middleware = (event, payload, next) => {
+ *   console.log(`[${event}]`, payload);
+ *   return next(payload);
+ * };
+ *
+ * // Filtering middleware
+ * const filter: Middleware = (event, payload, next) => {
+ *   if (event === "spam") return; // swallow
+ *   return next(payload);
+ * };
+ * ```
+ */
+export type Middleware = (
+  event: string,
+  payload: unknown,
+  next: (payload?: unknown) => void | Promise<void>,
+) => void | Promise<void>;
+
+/**
  * Options for subscribing to events.
  */
 export interface OnOptions {
@@ -166,6 +195,9 @@ export class Emitter<T extends EventMap = EventMap> {
   private pipeHandlers: ((event: string, payload: unknown) => void)[] = [];
 
   /** @internal */
+  private middlewares: Middleware[] = [];
+
+  /** @internal */
   private onError?: (error: unknown, event: string) => void;
 
   constructor(options?: EmitterOptions) {
@@ -200,6 +232,49 @@ export class Emitter<T extends EventMap = EventMap> {
   setMaxBufferSize(n: number): this {
     this.maxBufferSize = n;
     return this;
+  }
+
+  // -- Middleware -------------------------------------------------------
+
+  /**
+   * Register a middleware that intercepts events before they reach listeners.
+   * Middleware runs in registration order. Each middleware receives the event
+   * name, payload, and a `next` function to continue the chain.
+   *
+   * - Call `next()` to pass the original payload through.
+   * - Call `next(newPayload)` to transform the payload before listeners see it.
+   * - Don't call `next()` to swallow the event entirely (listeners won't fire).
+   *
+   * Returns a `Subscription` whose `off()` removes the middleware.
+   *
+   * @example
+   * ```ts
+   * // Logging
+   * emitter.use((event, payload, next) => {
+   *   console.log(`[${new Date().toISOString()}] ${event}`);
+   *   return next(payload);
+   * });
+   *
+   * // Filtering
+   * emitter.use((event, payload, next) => {
+   *   if (event === "spam") return; // swallow
+   *   return next(payload);
+   * });
+   *
+   * // Transform
+   * emitter.use((event, payload, next) => {
+   *   return next({ ...payload, timestamp: Date.now() });
+   * });
+   * ```
+   */
+  use(middleware: Middleware): Subscription {
+    this.middlewares.push(middleware);
+    return {
+      off: () => {
+        const idx = this.middlewares.indexOf(middleware);
+        if (idx !== -1) this.middlewares.splice(idx, 1);
+      },
+    };
   }
 
   // -- Subscribe --------------------------------------------------------
@@ -478,6 +553,7 @@ export class Emitter<T extends EventMap = EventMap> {
     this.listeners.clear();
     this.wildcardListeners = [];
     this.pipeHandlers = [];
+    this.middlewares = [];
     this.buffer = [];
     this.paused = false;
   }
@@ -548,17 +624,39 @@ export class Emitter<T extends EventMap = EventMap> {
     }
 
     const listeners = this.collectListeners(event);
+    if (listeners.length === 0 && this.middlewares.length === 0) return false;
+
+    let finalPayload = payload;
+    let swallowed = false;
+
+    if (this.middlewares.length > 0) {
+      swallowed = true;
+      let idx = 0;
+      const chain = (p: unknown): void => {
+        if (idx < this.middlewares.length) {
+          const mw = this.middlewares[idx++];
+          mw(event, p, (next?: unknown) => chain(next !== undefined ? next : p));
+        } else {
+          swallowed = false;
+          finalPayload = p;
+        }
+      };
+      chain(payload);
+
+      if (swallowed) return false;
+    }
+
     if (listeners.length === 0) return false;
 
     for (const stored of listeners) {
       if (this.onError) {
         try {
-          stored.fn(payload);
+          stored.fn(finalPayload);
         } catch (err) {
           this.onError(err, event);
         }
       } else {
-        stored.fn(payload);
+        stored.fn(finalPayload);
       }
     }
 
@@ -573,17 +671,39 @@ export class Emitter<T extends EventMap = EventMap> {
     }
 
     const listeners = this.collectListeners(event);
+    if (listeners.length === 0 && this.middlewares.length === 0) return false;
+
+    let finalPayload = payload;
+    let swallowed = false;
+
+    if (this.middlewares.length > 0) {
+      swallowed = true;
+      let idx = 0;
+      const chain = async (p: unknown): Promise<void> => {
+        if (idx < this.middlewares.length) {
+          const mw = this.middlewares[idx++];
+          await mw(event, p, async (next?: unknown) => chain(next !== undefined ? next : p));
+        } else {
+          swallowed = false;
+          finalPayload = p;
+        }
+      };
+      await chain(payload);
+
+      if (swallowed) return false;
+    }
+
     if (listeners.length === 0) return false;
 
     for (const stored of listeners) {
       if (this.onError) {
         try {
-          await stored.fn(payload);
+          await stored.fn(finalPayload);
         } catch (err) {
           this.onError(err, event);
         }
       } else {
-        await stored.fn(payload);
+        await stored.fn(finalPayload);
       }
     }
 
