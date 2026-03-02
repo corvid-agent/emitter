@@ -679,6 +679,113 @@ describe("Emitter", () => {
     });
   });
 
+  // -- onError + pause/resume -------------------------------------------
+
+  describe("onError with pause/resume", () => {
+    test("resume() with onError catches errors during buffered event replay", () => {
+      const errors: { err: unknown; event: string }[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err, event) => errors.push({ err, event }),
+      });
+
+      const boom = new Error("replay-boom");
+      emitter.on("ping", () => {
+        throw boom;
+      });
+
+      emitter.pause();
+      emitter.emit("ping", "buffered");
+      emitter.resume();
+
+      expect(errors).toEqual([{ err: boom, event: "ping" }]);
+    });
+
+    test("resumeAsync() with onError catches errors during async replay", async () => {
+      const errors: { err: unknown; event: string }[] = [];
+      const emitter = new Emitter<{ task: string }>({
+        onError: (err, event) => errors.push({ err, event }),
+      });
+
+      const boom = new Error("async-replay-boom");
+      emitter.on("task", async () => {
+        throw boom;
+      });
+
+      emitter.pause();
+      emitter.emit("task", "buffered");
+      await emitter.resumeAsync();
+
+      expect(errors).toEqual([{ err: boom, event: "task" }]);
+    });
+
+    test("buffered events continue replaying after a listener error in resume()", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      const received: string[] = [];
+      emitter.on("ping", (val) => {
+        if (val === "b") throw new Error("fail-on-b");
+        received.push(val);
+      });
+
+      emitter.pause();
+      emitter.emit("ping", "a");
+      emitter.emit("ping", "b");
+      emitter.emit("ping", "c");
+      emitter.resume();
+
+      expect(received).toEqual(["a", "c"]);
+      expect(errors.length).toBe(1);
+      expect((errors[0] as Error).message).toBe("fail-on-b");
+    });
+
+    test("buffered events continue replaying after a listener error in resumeAsync()", async () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ task: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      const received: string[] = [];
+      emitter.on("task", async (val) => {
+        if (val === "b") throw new Error("async-fail-on-b");
+        received.push(val);
+      });
+
+      emitter.pause();
+      emitter.emit("task", "a");
+      emitter.emit("task", "b");
+      emitter.emit("task", "c");
+      await emitter.resumeAsync();
+
+      expect(received).toEqual(["a", "c"]);
+      expect(errors.length).toBe(1);
+      expect((errors[0] as Error).message).toBe("async-fail-on-b");
+    });
+
+    test("multiple listeners: errors in one don't block others during resume()", () => {
+      const errors: unknown[] = [];
+      const emitter = new Emitter<{ ping: string }>({
+        onError: (err) => errors.push(err),
+      });
+
+      const order: string[] = [];
+      emitter.on("ping", () => order.push("first"));
+      emitter.on("ping", () => {
+        throw new Error("second-fails");
+      });
+      emitter.on("ping", () => order.push("third"));
+
+      emitter.pause();
+      emitter.emit("ping", "go");
+      emitter.resume();
+
+      expect(order).toEqual(["first", "third"]);
+      expect(errors.length).toBe(1);
+    });
+  });
+
   // -- Middleware --------------------------------------------------------
 
   describe("middleware", () => {
