@@ -67,6 +67,18 @@ export interface Subscription {
   off(): void;
 }
 
+/**
+ * A recorded event for history/replay.
+ */
+export interface HistoryEntry<T = unknown> {
+  /** The event name that was emitted. */
+  event: string;
+  /** The payload that was emitted. */
+  data: T;
+  /** Timestamp (ms since epoch) when the event was emitted. */
+  timestamp: number;
+}
+
 /** @internal */
 interface StoredListener<T = unknown> {
   fn: Listener<T>;
@@ -84,6 +96,15 @@ export interface EmitterOptions {
    * still execute. When unset, errors propagate normally.
    */
   onError?: (error: unknown, event: string) => void;
+
+  /**
+   * Enable event history for replay support.
+   *
+   * - `true` — retain unlimited history.
+   * - `number` — retain at most that many events (oldest evicted first).
+   * - `false` / `undefined` — history disabled (default).
+   */
+  history?: number | boolean;
 }
 
 // -- Wildcard Matching ----------------------------------------------------
@@ -200,8 +221,28 @@ export class Emitter<T extends EventMap = EventMap> {
   /** @internal */
   private onError?: (error: unknown, event: string) => void;
 
+  /** @internal Whether history recording is enabled. */
+  private historyEnabled: boolean;
+
+  /** @internal Maximum number of history entries (Infinity for unlimited). */
+  private historyCapacity: number;
+
+  /** @internal Recorded event history. */
+  private history: HistoryEntry[] = [];
+
   constructor(options?: EmitterOptions) {
     this.onError = options?.onError;
+
+    if (options?.history === true) {
+      this.historyEnabled = true;
+      this.historyCapacity = Infinity;
+    } else if (typeof options?.history === "number" && options.history > 0) {
+      this.historyEnabled = true;
+      this.historyCapacity = options.history;
+    } else {
+      this.historyEnabled = false;
+      this.historyCapacity = 0;
+    }
   }
 
   // -- Configuration ----------------------------------------------------
@@ -399,6 +440,7 @@ export class Emitter<T extends EventMap = EventMap> {
       }
       return false;
     }
+    this.recordHistory(event, payload);
     return this.dispatch(event, payload);
   }
 
@@ -422,6 +464,7 @@ export class Emitter<T extends EventMap = EventMap> {
       }
       return false;
     }
+    this.recordHistory(event, payload);
     return this.dispatchAsync(event, payload);
   }
 
@@ -452,6 +495,7 @@ export class Emitter<T extends EventMap = EventMap> {
     this.paused = false;
     const pending = this.buffer.splice(0);
     for (const { event, payload } of pending) {
+      this.recordHistory(event, payload);
       this.dispatch(event, payload);
     }
     return this;
@@ -467,6 +511,7 @@ export class Emitter<T extends EventMap = EventMap> {
     this.paused = false;
     const pending = this.buffer.splice(0);
     for (const { event, payload } of pending) {
+      this.recordHistory(event, payload);
       await this.dispatchAsync(event, payload);
     }
     return this;
@@ -517,6 +562,94 @@ export class Emitter<T extends EventMap = EventMap> {
     });
   }
 
+  // -- History / Replay -------------------------------------------------
+
+  /**
+   * Subscribe to an event AND immediately replay all matching historical
+   * events to the handler. The handler is called synchronously for each
+   * historical entry, then remains subscribed for future events (like `on()`).
+   *
+   * Wildcard patterns work the same way as `on()`.
+   *
+   * Returns a `Subscription` whose `off()` removes the ongoing subscription
+   * (historical replays have already fired and are unaffected).
+   *
+   * Requires history to be enabled via the `history` constructor option.
+   *
+   * @example
+   * ```ts
+   * // Late subscriber gets all past "config:loaded" events
+   * const sub = emitter.replay("config:loaded", (cfg) => {
+   *   console.log("config", cfg);
+   * });
+   * ```
+   */
+  replay<K extends string & keyof T>(
+    event: K,
+    listener: Listener<T[K]>,
+    options?: OnOptions,
+  ): Subscription;
+  replay(event: string, listener: Listener, options?: OnOptions): Subscription;
+  replay(event: string, listener: Listener<any>, options: OnOptions = {}): Subscription {
+    // Replay matching historical events synchronously
+    const isWild = event.includes("*");
+    for (const entry of this.history) {
+      const matches = isWild
+        ? matchWildcard(event, entry.event)
+        : entry.event === event;
+      if (matches) {
+        listener(entry.data);
+      }
+    }
+
+    // Subscribe for future events
+    return this.on(event, listener, options);
+  }
+
+  /**
+   * Return recorded event history.
+   *
+   * - With no arguments, returns all recorded events.
+   * - With an event name, returns only entries matching that exact name.
+   *
+   * Returns a shallow copy of the internal history array.
+   *
+   * @example
+   * ```ts
+   * const all = emitter.getHistory();
+   * const logins = emitter.getHistory("user:login");
+   * ```
+   */
+  getHistory(event?: string): HistoryEntry[] {
+    if (event !== undefined) {
+      return this.history.filter((entry) => entry.event === event);
+    }
+    return this.history.slice();
+  }
+
+  /**
+   * Clear recorded event history.
+   *
+   * - With no arguments, clears all history.
+   * - With an event name, clears only entries for that exact event.
+   *
+   * @returns `this` for chaining.
+   *
+   * @example
+   * ```ts
+   * emitter.clearHistory("user:login"); // clear login history only
+   * emitter.clearHistory();             // clear everything
+   * ```
+   */
+  clearHistory(event?: string): this {
+    if (event !== undefined) {
+      this.history = this.history.filter((entry) => entry.event !== event);
+    } else {
+      this.history = [];
+    }
+    return this;
+  }
+
   // -- Cleanup ----------------------------------------------------------
 
   /**
@@ -555,6 +688,7 @@ export class Emitter<T extends EventMap = EventMap> {
     this.pipeHandlers = [];
     this.middlewares = [];
     this.buffer = [];
+    this.history = [];
     this.paused = false;
   }
 
@@ -721,6 +855,18 @@ export class Emitter<T extends EventMap = EventMap> {
     const all = [...exact, ...wild];
     all.sort((a, b) => b.priority - a.priority);
     return all;
+  }
+
+  /** @internal Record an event in history if enabled. */
+  private recordHistory(event: string, payload: unknown): void {
+    if (!this.historyEnabled) return;
+
+    this.history.push({ event, data: payload, timestamp: Date.now() });
+
+    // Evict oldest entries when over capacity
+    if (this.history.length > this.historyCapacity) {
+      this.history.splice(0, this.history.length - this.historyCapacity);
+    }
   }
 
   /** @internal Remove once-listeners after dispatch. */
